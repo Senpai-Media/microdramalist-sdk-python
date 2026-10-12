@@ -6,8 +6,8 @@
 
 version: "3"
 
-# The maintainers' shared tasks (commit hooks, and GitLab helpers that do
-# not apply here); optional, so the Taskfile works in any clone.
+# The maintainers' shared tasks (commit hooks and other helpers);
+# optional, so the Taskfile works in any clone.
 includes:
   shared:
     taskfile: ../../tools/ci-templates/Taskfile.glab.yml

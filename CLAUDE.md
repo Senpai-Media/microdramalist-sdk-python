@@ -19,6 +19,11 @@ repositories' paths, credentials, or notes about how the site is run.
   token).
 - Responses stay the API's plain dicts; `types.py` only describes them.
   Dependencies: httpx and typing-extensions, nothing else. Python 3.10+.
+- Packages hold only the SDK and its docs (the owner, 2026-10-12): the
+  sdist is an allowlist in pyproject.toml, and `task package:check`
+  (scripts/check_package.py) fails on any other file or any
+  credential-shaped string. It fails today on hatchling's forced
+  .gitignore (pyproject.toml); fix that before the first PyPI upload.
 - Every change: `task check` passes, README / docs / CHANGELOG describe it
   in the same commit, and the TypeScript SDK
   (github.com/Senpai-Media/microdramalist-sdk-typescript) gets the same

@@ -13,7 +13,12 @@ where a show streams, and read the weekly MicroDramaList Top 20.
 - Handles the details: the bearer token, typed exceptions, rate-limit
   headers, waiting out a `429`, and iterators over paged results.
 
-Python 3.10+. Also available: [the TypeScript SDK](https://github.com/Senpai-Media/microdramalist-sdk-typescript).
+Python 3.10+.
+
+> **Status (October 2026):** the free endpoints are live; the token
+> endpoints (stats, lists, changes, charts) are rolling out on
+> microdramalist.com and answer 404 until they arrive. Not yet on PyPI:
+> install from GitHub (below). Also available: [the TypeScript SDK](https://github.com/Senpai-Media/microdramalist-sdk-typescript).
 
 ## Install
 

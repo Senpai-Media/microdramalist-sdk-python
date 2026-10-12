@@ -44,6 +44,17 @@ path = "src/microdramalist/_version.py"
 [tool.hatch.build.targets.wheel]
 packages = ["src/microdramalist"]
 
+# The source distribution is the SDK and its docs only (the owner,
+# 2026-10-12: "it should just have docs and the sdk code"); tests, specs,
+# CI, tool and agent files stay in the repository. scripts/check_package.py
+# fails the build when anything else appears.
+[tool.hatch.build.targets.sdist]
+only-include = ["src/microdramalist", "docs", "README.md", "CHANGELOG.md", "LICENSE", "pyproject.toml"]
+# Known gap (2026-10-12): hatchling force-adds the repository's .gitignore to
+# every sdist (sdist.py get_default_build_data; ignore-vcs and exclude do not
+# stop it), so `task package:check` fails until the build backend changes
+# (uv_build is the candidate). Fix before the first PyPI upload.
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"

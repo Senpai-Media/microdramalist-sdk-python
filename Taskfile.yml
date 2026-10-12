@@ -50,6 +50,13 @@ tasks:
       - for f in examples/*.py; do uv run python -m py_compile "$f"; done
       - uv build --out-dir dist
 
+  package:check:
+    desc: "Build the sdist and wheel and check they hold only the SDK, its docs and metadata (no secrets); run before any PyPI upload"
+    cmds:
+      - rm -rf dist
+      - uv build --out-dir dist
+      - uv run python scripts/check_package.py dist
+
   smoke:live:
     desc: "Call the live API's free endpoints (and the data ones when MICRODRAMALIST_TOKEN is set)"
     cmds:

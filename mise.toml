@@ -1,0 +1,10 @@
+# Tool versions for working on this repository (https://mise.jdx.dev).
+#   mise trust && mise install && uv sync
+# Python is the newest the package is tested on; it supports 3.10+ (CI runs
+# 3.10 to 3.14).
+
+[tools]
+python = "3.14.8"
+uv = "0.12.21"
+task = "3.54.0"
+prek = "0.5.5"

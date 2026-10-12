@@ -1,0 +1,63 @@
+# Taskfile (go-task, https://taskfile.dev): every command this repository
+# is worked with.
+#
+#   task            # list every task
+#   task check      # what CI runs
+
+version: "3"
+
+# The maintainers' shared tasks (commit hooks, and GitLab helpers that do
+# not apply here); optional, so the Taskfile works in any clone.
+includes:
+  shared:
+    taskfile: ../../tools/ci-templates/Taskfile.glab.yml
+    optional: true
+    flatten: true
+
+tasks:
+  default:
+    cmds:
+      - task --list
+
+  install:
+    desc: Create the virtual environment with the development dependencies
+    cmds:
+      - uv sync
+
+  test:
+    desc: Run the test suite (offline; a mock transport answers)
+    cmds:
+      - uv run pytest {{.CLI_ARGS}}
+
+  lint:
+    desc: ruff (lint and format check) and mypy (strict)
+    cmds:
+      - uv run ruff check .
+      - uv run ruff format --check .
+      - uv run mypy
+
+  format:
+    desc: Format the code with ruff
+    cmds:
+      - uv run ruff format .
+      - uv run ruff check --fix .
+
+  check:
+    desc: Everything CI runs -- lint, tests, the examples compile, and the package builds
+    cmds:
+      - task: lint
+      - task: test
+      - for f in examples/*.py; do uv run python -m py_compile "$f"; done
+      - uv build --out-dir dist
+
+  smoke:live:
+    desc: "Call the live API's free endpoints (and the data ones when MICRODRAMALIST_TOKEN is set)"
+    cmds:
+      - uv run python scripts/live_smoke.py
+
+  spec:sync:
+    desc: Refresh spec/openapi.yaml from microdramalist.com, then run the tests against it
+    cmds:
+      - curl -fsSL https://microdramalist.com/openapi.yaml -o spec/openapi.yaml
+      - git --no-pager diff --stat -- spec/openapi.yaml
+      - task: test

@@ -1,0 +1,1646 @@
+# The MicroDramaList API, every /api/v1 endpoint (2026-10-11,
+# docs/api-data-plan.md phase 7; the owner: "we should probably use
+# oapi-codegen for our API documentation").
+#
+# This file is the ONE definition of the API:
+#   - the Go site's token endpoints implement the server interface
+#     oapi-codegen generates from it (internal/site/apigen, `task go:gen`),
+#     so a handler that drifts from it fails to compile;
+#   - both sites serve it, as written at /openapi.yaml and converted at
+#     /openapi.json (api/openapi.json, written by the same `task go:gen`
+#     step and checked by api/spec_test.go);
+#   - `task api:lint` lints it, and `task api:contract` validates live
+#     responses of either stack against it (api/contract_test.go).
+#
+# OpenAPI 3.1, not 3.0.3: oapi-codegen v2.8.0 (2026-07-17, the version
+# go.mod pins as a tool) reads 3.1, including `type: [T, "null"]`, which
+# is how every nullable field below is written. Its README: "Initial
+# OpenAPI 3.1 support landed with #2336".
+#
+# Two groups of endpoints (tags Free and Feeds, and Catalogue stats,
+# Dramas and Charts):
+#   free  -- live before 2026-10-11 and kept free and anonymous (the
+#            owner's rule): drama lookup, search, the two requests, and
+#            the RSS feed. Their Go handlers predate this file and stay
+#            hand-written so their bytes do not change (Dramarr and the
+#            e2e suite depend on them); oapi-codegen skips these tags
+#            (internal/site/apigen/config.yaml). Described here as they
+#            behave.
+#   data  -- the token-only data API (phases 3 and 4): bearer token,
+#            per-minute and daily limits, CC BY 4.0 block in every body.
+#
+# Field order inside each schema follows the Node response objects, which
+# is the order a reader sees; the Go structs oapi-codegen writes sort
+# fields by name, so the two stacks' bodies are JSON-equal, not
+# byte-equal.
+openapi: 3.1.0
+
+info:
+  title: MicroDramaList API
+  version: 1.0.0
+  summary: The micro drama catalogue as JSON -- lookups, search, counts by genre and platform, the catalogue over time, and the weekly chart.
+  description: |
+    Two kinds of endpoint:
+
+    - **Free** (Free and Feeds): `/api/v1/dramas/{id}`, `/api/v1/search`,
+      `/api/v1/show-requests`, `/api/v1/platform-requests` and the RSS feed
+      `/feeds/new.xml`. No token; limited per address.
+    - **Data** (Catalogue stats, Dramas, Charts): everything else. Needs a personal token from
+      Settings > API tokens on microdramalist.com, sent as
+      `Authorization: Bearer mdl_...`. 60 requests a minute and 10,000 a
+      day per token (`X-RateLimit-*` and `X-RateLimit-Daily-*` headers);
+      over a limit the answer is 429 with `Retry-After`.
+
+    Words the data endpoints share: a **title** is one drama page (one
+    language or dub version); a **story** is the show behind its versions.
+    **Platform tags** are the genre tags an app gives a show in its own
+    listing; `tags=all` adds the ones our tagging assigned, which inflates
+    the top tags. **firstSeen** is when our crawler first saw a title, not
+    a release date. Ids are our public ids (`mdid-...`).
+
+    The data is licensed CC BY 4.0: use it for anything, including
+    commercially, and credit MicroDramaList with a link. Every data
+    response repeats the license in its body.
+  # The license of the data the API serves (the owner's choice, 2026-10-11).
+  license:
+    name: CC BY 4.0
+    url: https://creativecommons.org/licenses/by/4.0/
+  contact:
+    name: MicroDramaList
+    url: https://microdramalist.com/contact
+  termsOfService: https://microdramalist.com/terms
+
+# Absolute URLs in responses always use this origin (brand.PrimaryOrigin;
+# never the request's Host), whichever host served the call.
+servers:
+  - url: https://microdramalist.com
+
+externalDocs:
+  description: The guide, with worked examples in curl, jq and Python
+  url: https://microdramalist.com/api-docs
+
+# The tags group the reference (2026-10-11, the owner's list for the
+# Scalar reference on /api-docs): Free and Feeds need no token; Catalogue
+# stats, Dramas and Charts do. internal/site/apigen/config.yaml generates
+# Go for the three token tags only.
+tags:
+  - name: Free
+    description: Free and anonymous, limited per address (30 a minute for reads). Live before the data API and unchanged.
+  - name: Catalogue stats
+    description: "Token. Counts by platform, genre and language, and the catalogue over time. 60 a minute and 10,000 a day per token; CC BY 4.0."
+  - name: Dramas
+    description: "Token. Filtered lists, what is new, what changed, and one drama across apps."
+  - name: Charts
+    description: "Token. The weekly MicroDramaList Top 20 and each drama's history on it."
+  - name: Feeds
+    description: Free RSS, no token; cached 30 minutes.
+
+# The headers every successful data response carries (lib/apiAuth.ts
+# authorizeApi; Go: internal/site/pages/dataapi auth.go), written once as a
+# YAML anchor and aliased by each data 200 (OpenAPI has no component type
+# for a set of headers; JSON output has them expanded). A root extension,
+# because an anchor must come before its first alias.
+x-dataHeaders: &dataHeaders
+  X-RateLimit-Limit: { $ref: "#/components/headers/X-RateLimit-Limit" }
+  X-RateLimit-Remaining: { $ref: "#/components/headers/X-RateLimit-Remaining" }
+  X-RateLimit-Reset: { $ref: "#/components/headers/X-RateLimit-Reset" }
+  X-RateLimit-Daily-Limit: { $ref: "#/components/headers/X-RateLimit-Daily-Limit" }
+  X-RateLimit-Daily-Remaining: { $ref: "#/components/headers/X-RateLimit-Daily-Remaining" }
+  Cache-Control: { $ref: "#/components/headers/Cache-Control-Private" }
+
+paths:
+  # ------------------------------------------------------------------ free
+
+  /api/v1/dramas/{id}:
+    get:
+      operationId: getDrama
+      tags: ["Free"]
+      # Anonymous: no token (the owner's rule, 2026-10-11).
+      security: []
+      summary: One drama by its public id
+      description: |
+        The drama's facts, our rewritten description (never the platform's
+        text; null until written), a poster through our image proxy, and
+        every live listing. An id a duplicate merge folded into another
+        drama answers 301 to the surviving drama. 30 requests a minute per
+        address. Cached 5 minutes.
+      parameters:
+        - $ref: "#/components/parameters/DramaId"
+      responses:
+        "200":
+          description: The drama.
+          headers:
+            X-RateLimit-Limit: { $ref: "#/components/headers/X-RateLimit-Limit" }
+            X-RateLimit-Remaining: { $ref: "#/components/headers/X-RateLimit-Remaining" }
+            X-RateLimit-Reset: { $ref: "#/components/headers/X-RateLimit-Reset" }
+            Cache-Control: { $ref: "#/components/headers/Cache-Control-Public" }
+          content:
+            application/json:
+              example:
+                {
+                  "id": "mdid-r229ssxt",
+                  "title": "Zooton Gone Wrong: Bullying? My 108 Dads Say No.",
+                  "alternativeTitles": [],
+                  "genres": ["Family", "Tit for Tat", "Grassroots", "Fictional Dynasty"],
+                  "episodeCount": null,
+                  "releaseYear": null,
+                  "languages": [],
+                  "upvotes": 1,
+                  "downvotes": 0,
+                  "description": 'In the heart of Zooton, a city known for its vibrant wildlife and occasional conflicts, a young rabbit named Harper, abandoned at birth, was reared by a formidable group of 108 "gangster" fathers. These fathers, feared by all, hid their identities to protect their unique families. One day, Harper, now grown, attends an exclusive carnivore school where she becomes prey. Despite being bullied and humiliated by a powerful snow leopard heiress, she remains silent. However, a single phone call from Harper changes everything. When her fathers arrive at the school gates, the truth is revealed: the tiniest bunny may have the most dangerous family in the entire city.',
+                  "posterUrl": "https://microdramalist.com/api/poster?url=https%3A%2F%2Fakamai-static.shorttv.live%2Fimages%2Fcover%2F2026%2F09%2F11%2F5e19e31b5f1c46dfa396775df5eede44.jpg",
+                  "availableOn":
+                    [
+                      {
+                        "platform": "ShortTV",
+                        "url": "https://www.shorttv.live/drama/zooton-gone-wrong-bullying-my-108-dads-say-no-38111",
+                        "unverified": false,
+                        "language": null,
+                        "dubbed": false,
+                        "additionalAttributes": [],
+                        "externalId": null,
+                        "lastCheckedAt": "2026-09-22T06:08:19.590Z",
+                      },
+                    ],
+                }
+              schema: { $ref: "#/components/schemas/Drama" }
+        "301":
+          description: The id was merged into another drama; Location is that drama's endpoint.
+          headers:
+            Location:
+              description: "`https://microdramalist.com/api/v1/dramas/{surviving id}`"
+              schema: { type: string, format: uri }
+            X-RateLimit-Limit: { $ref: "#/components/headers/X-RateLimit-Limit" }
+            X-RateLimit-Remaining: { $ref: "#/components/headers/X-RateLimit-Remaining" }
+            X-RateLimit-Reset: { $ref: "#/components/headers/X-RateLimit-Reset" }
+        "404":
+          description: 'No published drama has this id (`{"error": "not found"}`).'
+          headers:
+            X-RateLimit-Limit: { $ref: "#/components/headers/X-RateLimit-Limit" }
+            X-RateLimit-Remaining: { $ref: "#/components/headers/X-RateLimit-Remaining" }
+            X-RateLimit-Reset: { $ref: "#/components/headers/X-RateLimit-Reset" }
+          content:
+            application/json:
+              example: { "error": "not found" }
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/FreeRateLimited" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
+  /api/v1/search:
+    get:
+      operationId: searchDramas
+      tags: ["Free"]
+      # Anonymous: no token (the owner's rule, 2026-10-11).
+      security: []
+      summary: Search dramas by title, or look up a public id
+      description: |
+        Up to 20 published dramas whose title contains `q` (case-insensitive,
+        a literal substring), in title order. A `q` starting with `mdid-` is
+        an exact id lookup instead: zero or one result, and an id merged
+        into another drama returns that drama. 30 requests a minute per
+        address. Cached 5 minutes.
+      parameters:
+        - name: q
+          in: query
+          required: true
+          example: billionaire
+          description: A title fragment, or a public id (`mdid-...`). Control characters are removed and it is trimmed; nothing left is a 400.
+          schema: { type: string, maxLength: 200, examples: [billionaire, mdid-e1lhjmf2] }
+      responses:
+        "200":
+          description: The matches (an empty array when none).
+          headers:
+            X-RateLimit-Limit: { $ref: "#/components/headers/X-RateLimit-Limit" }
+            X-RateLimit-Remaining: { $ref: "#/components/headers/X-RateLimit-Remaining" }
+            X-RateLimit-Reset: { $ref: "#/components/headers/X-RateLimit-Reset" }
+            Cache-Control: { $ref: "#/components/headers/Cache-Control-Public" }
+          content:
+            application/json:
+              example:
+                [
+                  {
+                    "id": "mdid-ukpy0tzd",
+                    "title": "18 Again: My Nemesis Became My Billionaire Husband?!",
+                    "posterUrl": "https://microdramalist.com/api/poster?url=https%3A%2F%2Fimg.reelhunter.xyz%2Fcovers%2F8c2ab06e-6917-4177-8ff3-559f6d4ab617.webp",
+                    "description": 'Rosa, seorang bintang balet berumur 18 tahun, terbangun selepas 8 tahun untuk menemui bahawa dia telah berkahwin dengan Carl, seorang bilionair yang merupakan musuhnya, dan mereka mempunyai seorang anak. Rosa merasakan hidupnya telah musnah akibat perkahwinan ini. Dia enggan menerima peranan sebagai "wanita jahat" dan memutuskan untuk mengakhiri hubungan tersebut, mengejar semula impian baletnya dan melindungi anaknya. Akhirnya, Rosa sedar bahawa Carl sebenarnya mencintainya.',
+                  },
+                  {
+                    "id": "mdid-e1lhjmf2",
+                    "title": "50 & Broke, Then Flash-Married a Billionaire",
+                    "posterUrl": "https://microdramalist.com/api/poster?url=https%3A%2F%2Fzshipubcf.farsunpteltd.com%2Fplaylet%2F1747018524_5FE5m3jeRt.jpg%3Fx-oss-process%3Dimage%2Fresize%2Cw_400%2Cimage%2Fformat%2Cwebp",
+                    "description": "Catherine, a 50-year-old single mother, lost her daughter Ella and was forced to support her son's wedding through debt. Her daughter-in-law, ungrateful and snobbish, evicted her. Catherine, desperate, rescued Lily, the daughter of Edward, a wealthy businessman. It was revealed that Lily was Catherine's long-lost biological daughter. The family was reunited.",
+                  },
+                ]
+              schema:
+                type: array
+                maxItems: 20
+                items: { $ref: "#/components/schemas/SearchResult" }
+        "400":
+          description: '`q` missing or empty (`{"error": "q is required"}`).'
+          headers:
+            X-RateLimit-Limit: { $ref: "#/components/headers/X-RateLimit-Limit" }
+            X-RateLimit-Remaining: { $ref: "#/components/headers/X-RateLimit-Remaining" }
+            X-RateLimit-Reset: { $ref: "#/components/headers/X-RateLimit-Reset" }
+          content:
+            application/json:
+              example: { "error": "q is required" }
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/FreeRateLimited" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
+  /api/v1/show-requests:
+    post:
+      operationId: requestShow
+      tags: ["Free"]
+      # Anonymous: no token (the owner's rule, 2026-10-11).
+      security: []
+      summary: Ask us to add a show by its page URL on an app we cover
+      description: |
+        Anonymous. 20 requests an hour per address. The answer says whether
+        the URL belongs to an app we cover (`matched`), and whether the show
+        is already in the catalogue (`alreadyAdded`, with its page's slug
+        when it is published). A URL already queued is not queued twice.
+        A URL on an app we do not cover answers `{"matched": false}`: ask
+        for the app with /api/v1/platform-requests instead.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url:
+                  type: string
+                  maxLength: 500
+                  description: The show's page, http or https.
+                  examples: ["https://www.reelshort.com/movie/example-123"]
+      responses:
+        "200":
+          description: Matched (queued, or already in the catalogue) or not matched.
+          content:
+            application/json:
+              example: { "matched": true, "alreadyAdded": false }
+              schema: { $ref: "#/components/schemas/ShowRequestReply" }
+        "400":
+          description: 'Not an http(s) URL of at most 500 characters (`{"error": "Enter a valid URL."}`).'
+          content:
+            application/json:
+              example: { "error": "Enter a valid URL." }
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/SubmissionsRateLimited" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
+  /api/v1/platform-requests:
+    post:
+      operationId: requestPlatform
+      tags: ["Free"]
+      summary: Ask us to cover a new app or site (signed in)
+      description: |
+        Needs a signed-in session on microdramalist.com (the browser's
+        session cookie), not an API token. 10 requests an hour per address.
+      security:
+        - session: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url, reason]
+              properties:
+                url:
+                  type: string
+                  maxLength: 500
+                  description: The app's or site's address, http or https.
+                reason:
+                  type: string
+                  minLength: 1
+                  maxLength: 1000
+                  description: Why it should be added.
+      responses:
+        "200":
+          description: Recorded.
+          content:
+            application/json:
+              example: { "ok": true }
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean, const: true }
+        "400":
+          description: "A bad URL (`Enter a valid URL.`) or a missing or too long reason (`Tell us a bit about why this platform should be added.`)."
+          content:
+            application/json:
+              example: { "error": "Tell us a bit about why this platform should be added." }
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: 'Not signed in (`{"error": "Sign in to request a new platform."}`).'
+          content:
+            application/json:
+              example: { "error": "Sign in to request a new platform." }
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/SubmissionsRateLimited" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
+  /feeds/new.xml:
+    get:
+      operationId: newDramasFeed
+      tags: ["Feeds"]
+      # Anonymous: no token (the owner's rule, 2026-10-11).
+      security: []
+      summary: New dramas as RSS 2.0
+      description: |
+        The dramas our crawler first saw in the last 7 days, newest first,
+        50 items, as RSS -- the free twin of /api/v1/new. Filters as the
+        data endpoints. Cached 30 minutes by the CDN; 30 requests a minute
+        per address behind it. Errors here are plain text, not JSON.
+      parameters:
+        - $ref: "#/components/parameters/Platform"
+        - $ref: "#/components/parameters/Genre"
+        - $ref: "#/components/parameters/Language"
+      responses:
+        "200":
+          description: The feed.
+          headers:
+            Cache-Control:
+              description: "`public, max-age=900` (and 30 minutes at the CDN)."
+              schema: { type: string }
+          content:
+            application/rss+xml:
+              example: |
+                <?xml version="1.0" encoding="UTF-8"?>
+                <rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+                  <channel>
+                    <title>MicroDramaList: new micro dramas (Revenge)</title>
+                    <link>https://microdramalist.com/new</link>
+                    <atom:link href="https://microdramalist.com/feeds/new.xml?genre=Revenge" rel="self" type="application/rss+xml"/>
+                    <description>Micro dramas first seen by MicroDramaList in the last 7 days. Data CC BY 4.0, credit MicroDramaList.</description>
+                    <language>en</language>
+                    <item>
+                      <title>The Fisherman God: Betrayal &amp; Wrath</title>
+                      <link>https://microdramalist.com/drama/the-fisherman-god-betrayal-wrath</link>
+                      <guid isPermaLink="false">mdid-z1brmjus</guid>
+                      <pubDate>Sat, 10 Oct 2026 01:56:36 GMT</pubDate>
+                      <description>Modern, Revenge, High Fantasy · on shorttv</description>
+                      <category>Modern</category>
+                      <category>Revenge</category>
+                      <category>High Fantasy</category>
+                    </item>
+                  </channel>
+                </rss>
+              schema: { type: string }
+        "400":
+          description: A parameter refused; the body is the reason, as text.
+          content:
+            text/plain:
+              example: "platform: a platform slug, as /api/v1/stats/platforms lists"
+              schema: { type: string }
+        "429":
+          description: Over 30 a minute from this address (`rate limit exceeded`, text).
+          headers:
+            Retry-After: { $ref: "#/components/headers/Retry-After" }
+          content:
+            text/plain:
+              example: "rate limit exceeded"
+              schema: { type: string }
+
+  # ------------------------------------------------------------------ data
+
+  /api/v1/stats/platforms:
+    get:
+      operationId: getStatsPlatforms
+      tags: ["Catalogue stats"]
+      summary: Every app we track, with its size
+      description: |
+        Per app: titles and stories with a live listing, the share of titles
+        in English, and the median episode count (episode counts from 1 to
+        300). Largest first. Recomputed at most once an hour.
+      security:
+        - bearer: []
+      responses:
+        "200":
+          description: The apps.
+          headers: *dataHeaders
+          content:
+            application/json:
+              example:
+                {
+                  "platforms":
+                    [
+                      {
+                        "platform": "reelshort",
+                        "name": "ReelShort",
+                        "enabled": true,
+                        "titles": 18395,
+                        "stories": 7828,
+                        "englishShare": 16.9,
+                        "episodeMedian": 57,
+                      },
+                      {
+                        "platform": "stardusttv",
+                        "name": "StardustTV",
+                        "enabled": true,
+                        "titles": 10568,
+                        "stories": 6282,
+                        "englishShare": 20.9,
+                        "episodeMedian": 59,
+                      },
+                      {
+                        "platform": "moboreels",
+                        "name": "MoboReels",
+                        "enabled": true,
+                        "titles": 7110,
+                        "stories": 3907,
+                        "englishShare": 29.1,
+                        "episodeMedian": 60,
+                      },
+                    ],
+                  "license": "CC BY 4.0",
+                  "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+                  "attribution": "Data from MicroDramaList (https://microdramalist.com)",
+                }
+              schema:
+                allOf:
+                  - type: object
+                    required: [platforms]
+                    properties:
+                      platforms:
+                        type: array
+                        items: { $ref: "#/components/schemas/PlatformStat" }
+                  - $ref: "#/components/schemas/License"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/TokenRateLimited" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
+  /api/v1/stats/genres:
+    get:
+      operationId: getStatsGenres
+      tags: ["Catalogue stats"]
+      summary: Stories per genre tag in a scope
+      description: |
+        Stories and titles per genre tag for one app (or all), one language
+        (or all), with each tag's share of the scope's stories; the 200
+        largest tags. Platform tags by default. ReelShort's "Playing Dumb"
+        is left out of platform tags: about 2,000 of its listings carry
+        that tag and nothing else, an artefact of how they reach us.
+        Recomputed at most once an hour.
+      security:
+        - bearer: []
+      parameters:
+        - $ref: "#/components/parameters/Platform"
+        - $ref: "#/components/parameters/Language"
+        - $ref: "#/components/parameters/Tags"
+      responses:
+        "200":
+          description: The tags, largest first.
+          headers: *dataHeaders
+          content:
+            application/json:
+              example:
+                {
+                  "scope": { "platform": "dramabox", "language": null, "tags": "platform" },
+                  "totalStories": 3560,
+                  "genres":
+                    [
+                      { "genre": "Revenge", "stories": 876, "titles": 887, "share": 24.6 },
+                      { "genre": "Strong Female Lead", "stories": 605, "titles": 613, "share": 17 },
+                      { "genre": "Romance", "stories": 501, "titles": 507, "share": 14.1 },
+                    ],
+                  "license": "CC BY 4.0",
+                  "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+                  "attribution": "Data from MicroDramaList (https://microdramalist.com)",
+                }
+              schema:
+                allOf:
+                  - type: object
+                    required: [scope, totalStories, genres]
+                    properties:
+                      scope:
+                        type: object
+                        required: [platform, language, tags]
+                        properties:
+                          platform: { type: [string, "null"] }
+                          language: { type: [string, "null"] }
+                          tags: { $ref: "#/components/schemas/TagSource" }
+                      totalStories:
+                        type: integer
+                        description: Stories in the scope (with a live listing), the shares' denominator.
+                      genres:
+                        type: array
+                        maxItems: 200
+                        items: { $ref: "#/components/schemas/GenreStat" }
+                  - $ref: "#/components/schemas/License"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/TokenRateLimited" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
+  /api/v1/stats/timeline:
+    get:
+      operationId: getStatsTimeline
+      tags: ["Catalogue stats"]
+      summary: A genre, or a whole app, over time
+      description: |
+        Two series. `snapshots`: the catalogue's size in the scope at the
+        end of each period, from the nightly catalogue snapshot (from
+        2026-10-12; the last snapshot of each period). `firstSeen`: titles
+        our crawler first saw in each period -- not release dates, and it
+        reaches back before the snapshots began. Without `genre`, the whole
+        scope. Recomputed at most once an hour.
+      security:
+        - bearer: []
+      parameters:
+        - $ref: "#/components/parameters/Genre"
+        - $ref: "#/components/parameters/Platform"
+        - $ref: "#/components/parameters/Language"
+        - $ref: "#/components/parameters/Tags"
+        - name: interval
+          in: query
+          example: week
+          description: "The period each point covers. Anything else is a 400 (`interval: day, week or month`)."
+          schema:
+            type: string
+            enum: [day, week, month]
+            default: week
+      responses:
+        "200":
+          description: The two series, oldest first.
+          headers: *dataHeaders
+          content:
+            application/json:
+              example:
+                {
+                  "scope":
+                    {
+                      "genre": "Revenge",
+                      "platform": "dramabox",
+                      "language": null,
+                      "tags": "platform",
+                      "interval": "week",
+                    },
+                  "notes":
+                    {
+                      "snapshots": "catalogue size at the end of each period, from nightly snapshots (first snapshot 2026-10-12)",
+                      "firstSeen": "titles our crawler first saw in each period; not release dates",
+                    },
+                  "snapshots": [{ "period": "2026-10-05", "titles": 887, "stories": 876 }],
+                  "firstSeen":
+                    [
+                      { "period": "2026-09-07", "titles": 908 },
+                      { "period": "2026-09-21", "titles": 323 },
+                      { "period": "2026-09-28", "titles": 284 },
+                      { "period": "2026-10-05", "titles": 266 },
+                    ],
+                  "license": "CC BY 4.0",
+                  "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+                  "attribution": "Data from MicroDramaList (https://microdramalist.com)",
+                }
+              schema:
+                allOf:
+                  - type: object
+                    required: [scope, notes, snapshots, firstSeen]
+                    properties:
+                      scope:
+                        type: object
+                        required: [genre, platform, language, tags, interval]
+                        properties:
+                          genre: { type: [string, "null"] }
+                          platform: { type: [string, "null"] }
+                          language: { type: [string, "null"] }
+                          tags: { $ref: "#/components/schemas/TagSource" }
+                          interval: { type: string, enum: [day, week, month] }
+                      notes:
+                        type: object
+                        required: [snapshots, firstSeen]
+                        description: What each series means, in words.
+                        properties:
+                          snapshots: { type: string }
+                          firstSeen: { type: string }
+                      snapshots:
+                        type: array
+                        items:
+                          type: object
+                          required: [period, titles, stories]
+                          properties:
+                            period:
+                              {
+                                type: string,
+                                format: date,
+                                description: "The period's first day (UTC; weeks start on Monday).",
+                              }
+                            titles: { type: integer }
+                            stories: { type: integer }
+                      firstSeen:
+                        type: array
+                        items:
+                          type: object
+                          required: [period, titles]
+                          properties:
+                            period: { type: string, format: date }
+                            titles: { type: integer }
+                  - $ref: "#/components/schemas/License"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/TokenRateLimited" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
+  /api/v1/dramas:
+    get:
+      operationId: listDramas
+      tags: ["Dramas"]
+      summary: Published dramas, filtered, 50 a page
+      description: |
+        Published dramas with a live listing, filtered by genre, app and
+        language: newest first (by firstSeen), or most popular on our site
+        over the last 30 days (a rank; view counts stay private). Pages 1 to
+        200; for more, use filters or the data packs (/data).
+      security:
+        - bearer: []
+      parameters:
+        - $ref: "#/components/parameters/Genre"
+        - $ref: "#/components/parameters/Platform"
+        - $ref: "#/components/parameters/Language"
+        - name: sort
+          in: query
+          example: popular
+          description: "Anything else is a 400 (`sort: new or popular`)."
+          schema:
+            type: string
+            enum: [new, popular]
+            default: new
+        - name: page
+          in: query
+          example: 1
+          description: "1 to 200; anything else is a 400 (`page: 1 to 200 (use filters or the data packs for more)`)."
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 1
+            # Bound as a string in Go: the handler applies the Node route's
+            # Number() rule and message itself, in the Node route's order
+            # (scope first, then sort, then page).
+            x-go-type: string
+      responses:
+        "200":
+          description: One page.
+          headers: *dataHeaders
+          content:
+            application/json:
+              example:
+                {
+                  "page": 1,
+                  "perPage": 50,
+                  "dramas":
+                    [
+                      {
+                        "id": "mdid-r229ssxt",
+                        "slug": "zooton-gone-wrong-bullying-my-108-dads-say-no",
+                        "url": "https://microdramalist.com/drama/zooton-gone-wrong-bullying-my-108-dads-say-no",
+                        "title": "Zooton Gone Wrong: Bullying? My 108 Dads Say No.",
+                        "language": "eng",
+                        "genres": ["Family", "Tit for Tat", "Grassroots", "Fictional Dynasty"],
+                        "episodeCount": null,
+                        "releaseYear": null,
+                        "platforms": ["shorttv"],
+                        "firstSeen": "2026-09-22T06:08:19.591Z",
+                      },
+                      {
+                        "id": "mdid-7tnm59ab",
+                        "slug": "even-billionaires-beg-to-borrow-from-me",
+                        "url": "https://microdramalist.com/drama/even-billionaires-beg-to-borrow-from-me",
+                        "title": "Even Billionaires Beg to Borrow From Me",
+                        "language": "eng",
+                        "genres":
+                          [
+                            "Underdog Rise",
+                            "Superpowers",
+                            "Plot Twists",
+                            "Underdog",
+                            "Feel-Good",
+                            "Supernatural Powers",
+                            "Coming-of-Age",
+                          ],
+                        "episodeCount": 15,
+                        "releaseYear": null,
+                        "platforms": ["flickreels"],
+                        "firstSeen": "2026-09-21T00:09:41.770Z",
+                      },
+                    ],
+                  "nextPage": 2,
+                  "license": "CC BY 4.0",
+                  "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+                  "attribution": "Data from MicroDramaList (https://microdramalist.com)",
+                }
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/DramaPage"
+                  - $ref: "#/components/schemas/License"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/TokenRateLimited" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
+  /api/v1/new:
+    get:
+      operationId: listNewDramas
+      tags: ["Dramas"]
+      summary: Dramas first seen in the last days
+      description: |
+        Published dramas our crawler first saw in the last `days`, newest
+        first, 50 a page. The same list is free as RSS at /feeds/new.xml.
+      security:
+        - bearer: []
+      parameters:
+        - $ref: "#/components/parameters/Platform"
+        - $ref: "#/components/parameters/Genre"
+        - $ref: "#/components/parameters/Language"
+        - name: days
+          in: query
+          example: 7
+          description: "1 to 31; anything else is a 400 (`days: 1 to 31`)."
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 31
+            default: 7
+            x-go-type: string
+        - name: page
+          in: query
+          example: 1
+          description: "1 to 200; anything else is a 400 (`page: 1 to 200`)."
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 1
+            x-go-type: string
+      responses:
+        "200":
+          description: One page.
+          headers: *dataHeaders
+          content:
+            application/json:
+              example:
+                {
+                  "since": "2026-10-05T00:37:55.070Z",
+                  "page": 1,
+                  "perPage": 50,
+                  "dramas":
+                    [
+                      {
+                        "id": "mdid-3wbk685d",
+                        "slug": "il-vampiro-della-porta-accanto",
+                        "url": "https://microdramalist.com/drama/il-vampiro-della-porta-accanto",
+                        "title": "Il vampiro della porta accanto",
+                        "language": "ita",
+                        "genres": [],
+                        "episodeCount": null,
+                        "releaseYear": null,
+                        "platforms": ["reelshort"],
+                        "firstSeen": "2026-10-10T02:00:03.338Z",
+                      },
+                      {
+                        "id": "mdid-gryynl1x",
+                        "slug": "wampir-z-sasiedztwa",
+                        "url": "https://microdramalist.com/drama/wampir-z-sasiedztwa",
+                        "title": "Wampir z sąsiedztwa",
+                        "language": "pol",
+                        "genres": [],
+                        "episodeCount": null,
+                        "releaseYear": null,
+                        "platforms": ["reelshort"],
+                        "firstSeen": "2026-10-10T01:59:56.644Z",
+                      },
+                    ],
+                  "nextPage": 2,
+                  "license": "CC BY 4.0",
+                  "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+                  "attribution": "Data from MicroDramaList (https://microdramalist.com)",
+                }
+              schema:
+                allOf:
+                  - type: object
+                    required: [since]
+                    properties:
+                      since: { type: string, format: date-time, description: "now - days, the list's cut-off." }
+                  - $ref: "#/components/schemas/DramaPage"
+                  - $ref: "#/components/schemas/License"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/TokenRateLimited" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
+  /api/v1/changes:
+    get:
+      operationId: listChanges
+      tags: ["Dramas"]
+      summary: What changed since a time
+      description: |
+        Dramas created, updated (their content changed) and pulled from an
+        app since a time, oldest first, up to 1,000 a call -- for keeping a
+        copy in sync after loading a data pack. Ask again with `since` set
+        to `next` until `complete` is true. At most 31 days back; older,
+        start from the latest pack.
+      security:
+        - bearer: []
+      parameters:
+        - name: since
+          in: query
+          example: "2026-10-10T00:00:00Z"
+          description: |
+            An ISO 8601 time (or date) within the last 31 days; default 24
+            hours ago. Anything else is a 400 (`since: an ISO 8601 time
+            within the last 31 days`).
+          schema:
+            type: string
+            format: date-time
+            # Read as a string in Go (every date-time is, config.yaml's
+            # type-mapping): the Node route parses it with JavaScript's
+            # Date, which also takes a bare date ("2026-10-10"), and so
+            # does the handler (dataapi parseISOTime).
+            examples: ["2026-10-10T00:00:00Z"]
+      responses:
+        "200":
+          description: The events.
+          headers: *dataHeaders
+          content:
+            application/json:
+              example:
+                {
+                  "since": "2026-10-10T00:00:00.000Z",
+                  "events":
+                    [
+                      {
+                        "type": "updated",
+                        "id": "mdid-mk3qnfvl",
+                        "url": "https://microdramalist.com/drama/the-twins-requiem",
+                        "platform": null,
+                        "at": "2026-10-10T00:00:26.967Z",
+                      },
+                      {
+                        "type": "updated",
+                        "id": "mdid-ctgxa50b",
+                        "url": "https://microdramalist.com/drama/o-milagre-de-natal",
+                        "platform": null,
+                        "at": "2026-10-10T00:01:15.738Z",
+                      },
+                    ],
+                  "next": "2026-10-10T00:01:15.738Z",
+                  "complete": false,
+                  "license": "CC BY 4.0",
+                  "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+                  "attribution": "Data from MicroDramaList (https://microdramalist.com)",
+                }
+              schema:
+                allOf:
+                  - type: object
+                    required: [since, events, next, complete]
+                    properties:
+                      since: { type: string, format: date-time }
+                      events:
+                        type: array
+                        maxItems: 1000
+                        items: { $ref: "#/components/schemas/ChangeEvent" }
+                      next:
+                        {
+                          type: string,
+                          format: date-time,
+                          description: "The last event's time (or `since` when none): the next call's `since`.",
+                        }
+                      complete: { type: boolean, description: "False when the 1,000 limit cut the list short." }
+                  - $ref: "#/components/schemas/License"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/TokenRateLimited" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
+  /api/v1/dramas/{id}/watch:
+    get:
+      operationId: getDramaWatch
+      tags: ["Dramas"]
+      summary: Where to watch a drama
+      description: |
+        Every live listing of the drama and of its language and dub
+        versions: the app, the link a reader follows on our drama page,
+        language, dub, episode count, and the version it belongs to.
+      security:
+        - bearer: []
+      parameters:
+        - $ref: "#/components/parameters/DramaId"
+      responses:
+        "200":
+          description: The listings.
+          headers: *dataHeaders
+          content:
+            application/json:
+              example:
+                {
+                  "id": "mdid-r229ssxt",
+                  "title": "Zooton Gone Wrong: Bullying? My 108 Dads Say No.",
+                  "url": "https://microdramalist.com/drama/zooton-gone-wrong-bullying-my-108-dads-say-no",
+                  "watch":
+                    [
+                      {
+                        "platform": "shorttv",
+                        "platformName": "ShortTV",
+                        "link": "https://www.shorttv.live/drama/zooton-gone-wrong-bullying-my-108-dads-say-no-38111",
+                        "language": "eng",
+                        "dubbed": false,
+                        "episodeCount": null,
+                        "version":
+                          {
+                            "id": "mdid-r229ssxt",
+                            "url": "https://microdramalist.com/drama/zooton-gone-wrong-bullying-my-108-dads-say-no",
+                            "title": "Zooton Gone Wrong: Bullying? My 108 Dads Say No.",
+                          },
+                        "lastChecked": "2026-09-22T06:08:19.590Z",
+                      },
+                      {
+                        "platform": "shorttv",
+                        "platformName": "ShortTV",
+                        "link": "https://www.shorttv.live",
+                        "language": "jpn",
+                        "dubbed": false,
+                        "episodeCount": null,
+                        "version":
+                          {
+                            "id": "mdid-46rize8b",
+                            "url": "https://microdramalist.com/drama/zooton-gone-wrong-bullying-my-108-dads-say-no-japanese",
+                            "title": "Zooton Gone Wrong: Bullying? My 108 Dads Say No.【校园霸凌？可我有108个混黑帮的爸 动物城版（李）-峰】",
+                          },
+                        "lastChecked": "2026-10-07T14:54:12.582Z",
+                      },
+                    ],
+                  "license": "CC BY 4.0",
+                  "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+                  "attribution": "Data from MicroDramaList (https://microdramalist.com)",
+                }
+              schema:
+                allOf:
+                  - type: object
+                    required: [id, title, url, watch]
+                    properties:
+                      id: { type: string }
+                      title: { type: string }
+                      url: { type: string, format: uri }
+                      watch:
+                        type: array
+                        items: { $ref: "#/components/schemas/WatchListing" }
+                  - $ref: "#/components/schemas/License"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TokenRateLimited" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
+  /api/v1/dramas/{id}/matches:
+    get:
+      operationId: getDramaMatches
+      tags: ["Dramas"]
+      summary: One show across apps
+      description: |
+        The show's story id (its original version's id), every published
+        language and dub version with our id, and each version's listings
+        with the app's own show id and URL. The grouping is ours (our
+        duplicate review), not the apps'. Versions and listings come in no
+        promised order (the Go site lists them in the order we added them).
+      security:
+        - bearer: []
+      parameters:
+        - $ref: "#/components/parameters/DramaId"
+      responses:
+        "200":
+          description: The versions.
+          headers: *dataHeaders
+          content:
+            application/json:
+              example:
+                {
+                  "story": "mdid-r229ssxt",
+                  "versions":
+                    [
+                      {
+                        "id": "mdid-r229ssxt",
+                        "url": "https://microdramalist.com/drama/zooton-gone-wrong-bullying-my-108-dads-say-no",
+                        "title": "Zooton Gone Wrong: Bullying? My 108 Dads Say No.",
+                        "language": "eng",
+                        "kind": "original",
+                        "label": null,
+                        "listings":
+                          [
+                            {
+                              "platform": "shorttv",
+                              "platformShowId": null,
+                              "platformUrl": "https://www.shorttv.live/drama/zooton-gone-wrong-bullying-my-108-dads-say-no-38111",
+                              "unverified": false,
+                            },
+                          ],
+                      },
+                      {
+                        "id": "mdid-46rize8b",
+                        "url": "https://microdramalist.com/drama/zooton-gone-wrong-bullying-my-108-dads-say-no-japanese",
+                        "title": "Zooton Gone Wrong: Bullying? My 108 Dads Say No.【校园霸凌？可我有108个混黑帮的爸 动物城版（李）-峰】",
+                        "language": "jpn",
+                        "kind": "language",
+                        "label": "Japanese",
+                        "listings":
+                          [
+                            {
+                              "platform": "shorttv",
+                              "platformShowId": "653105",
+                              "platformUrl": "https://r.reelsgo.tv/B05jnRhCDPk0",
+                              "unverified": true,
+                            },
+                          ],
+                      },
+                    ],
+                  "license": "CC BY 4.0",
+                  "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+                  "attribution": "Data from MicroDramaList (https://microdramalist.com)",
+                }
+              schema:
+                allOf:
+                  - type: object
+                    required: [story, versions]
+                    properties:
+                      story:
+                        {
+                          type: string,
+                          description: "The original version's public id (this drama's own when the original is not published).",
+                        }
+                      versions:
+                        type: array
+                        items: { $ref: "#/components/schemas/MatchVersion" }
+                  - $ref: "#/components/schemas/License"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TokenRateLimited" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
+  /api/v1/dramas/{id}/chart:
+    get:
+      operationId: getDramaChart
+      tags: ["Charts"]
+      summary: A drama's history on the weekly Top 20
+      description: |
+        Each week the drama was on the MicroDramaList Top 20, with its rank,
+        last week's rank and its movement; its peak and weeks on the chart.
+        How the chart works: /charts/methodology.
+      security:
+        - bearer: []
+      parameters:
+        - $ref: "#/components/parameters/DramaId"
+      responses:
+        "200":
+          description: The history, oldest week first.
+          headers: *dataHeaders
+          content:
+            application/json:
+              example:
+                {
+                  "id": "mdid-3bk6kdti",
+                  "title": "Weak Dragon's Covenanted Harem",
+                  "weeksOnChart": 2,
+                  "peak": 1,
+                  "weeks":
+                    [
+                      { "week": "2026-W39", "rank": 4, "move": "new", "lastWeek": null },
+                      { "week": "2026-W40", "rank": 1, "move": "up", "lastWeek": 4 },
+                    ],
+                  "license": "CC BY 4.0",
+                  "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+                  "attribution": "Data from MicroDramaList (https://microdramalist.com)",
+                }
+              schema:
+                allOf:
+                  - type: object
+                    required: [id, title, weeksOnChart, peak, weeks]
+                    properties:
+                      id: { type: string }
+                      title: { type: string }
+                      weeksOnChart: { type: integer }
+                      peak: { type: [integer, "null"], description: "Best rank; null when never on the chart." }
+                      weeks:
+                        type: array
+                        items:
+                          type: object
+                          required: [week, rank, move, lastWeek]
+                          properties:
+                            week: { $ref: "#/components/schemas/IsoWeek" }
+                            rank: { type: integer, minimum: 1 }
+                            move: { $ref: "#/components/schemas/ChartMove" }
+                            lastWeek: { type: [integer, "null"] }
+                  - $ref: "#/components/schemas/License"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TokenRateLimited" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
+  /api/v1/charts/weekly:
+    get:
+      operationId: listChartWeeks
+      tags: ["Charts"]
+      summary: Every frozen week of the Top 20
+      security:
+        - bearer: []
+      responses:
+        "200":
+          description: The weeks, newest first.
+          headers: *dataHeaders
+          content:
+            application/json:
+              example:
+                {
+                  "weeks":
+                    [
+                      { "week": "2026-W40", "startsOn": "2026-09-28", "url": "/api/v1/charts/weekly/2026-W40" },
+                      { "week": "2026-W39", "startsOn": "2026-09-21", "url": "/api/v1/charts/weekly/2026-W39" },
+                    ],
+                  "license": "CC BY 4.0",
+                  "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+                  "attribution": "Data from MicroDramaList (https://microdramalist.com)",
+                }
+              schema:
+                allOf:
+                  - type: object
+                    required: [weeks]
+                    properties:
+                      weeks:
+                        type: array
+                        items:
+                          type: object
+                          required: [week, startsOn, url]
+                          properties:
+                            week: { $ref: "#/components/schemas/IsoWeek" }
+                            startsOn: { type: string, format: date }
+                            url: { type: string, description: "This week's chart, a path on this API." }
+                  - $ref: "#/components/schemas/License"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/TokenRateLimited" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
+  /api/v1/charts/weekly/{week}:
+    get:
+      operationId: getChartWeek
+      tags: ["Charts"]
+      summary: One week's Top 20
+      description: The week's entries with rank, movement, peak and weeks on chart.
+      security:
+        - bearer: []
+      parameters:
+        - name: week
+          in: path
+          required: true
+          example: latest
+          description: An ISO week such as `2026-W40`, or `latest`. Anything else, or a week without a chart, is a 404 (`no such week`).
+          schema:
+            type: string
+            examples: [2026-W40, latest]
+      responses:
+        "200":
+          description: The chart.
+          headers: *dataHeaders
+          content:
+            application/json:
+              example:
+                {
+                  "week": "2026-W40",
+                  "startsOn": "2026-09-28",
+                  "entries":
+                    [
+                      {
+                        "rank": 1,
+                        "move": "up",
+                        "lastWeek": 4,
+                        "peak": 1,
+                        "weeksOnChart": 2,
+                        "id": "mdid-3bk6kdti",
+                        "title": "Weak Dragon's Covenanted Harem",
+                        "url": "https://microdramalist.com/drama/weak-dragon-s-covenanted-harem",
+                      },
+                      {
+                        "rank": 2,
+                        "move": "new",
+                        "lastWeek": null,
+                        "peak": 2,
+                        "weeksOnChart": 1,
+                        "id": "mdid-cl0ypmnb",
+                        "title": "7 Months Pregnant, Doing Chores for Checkup Money",
+                        "url": "https://microdramalist.com/drama/7-months-pregnant-doing-chores-for-checkup-money",
+                      },
+                    ],
+                  "license": "CC BY 4.0",
+                  "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+                  "attribution": "Data from MicroDramaList (https://microdramalist.com)",
+                }
+              schema:
+                allOf:
+                  - type: object
+                    required: [week, startsOn, entries]
+                    properties:
+                      week: { $ref: "#/components/schemas/IsoWeek" }
+                      startsOn: { type: string, format: date }
+                      entries:
+                        type: array
+                        maxItems: 20
+                        items: { $ref: "#/components/schemas/ChartEntry" }
+                  - $ref: "#/components/schemas/License"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TokenRateLimited" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+      bearerFormat: "mdl_ + 43 base64url characters"
+      description: |
+        A personal token from Settings > API tokens (signed in, email
+        verified; up to five live tokens an account). It is shown once; we
+        keep only its SHA-256. In Settings a token can be regenerated (a new
+        secret, the old one stops working at once), disabled and enabled
+        again, or revoked for good. Unknown, disabled and revoked tokens are
+        401.
+    session:
+      type: apiKey
+      in: cookie
+      name: session
+      description: The site's own sign-in session (only /api/v1/platform-requests uses it).
+
+  parameters:
+    DramaId:
+      name: id
+      in: path
+      required: true
+      description: A public drama id.
+      example: mdid-r229ssxt
+      schema:
+        type: string
+        examples: [mdid-r229ssxt]
+    # The scope parameters (lib/dataApi.ts readScope; Go:
+    # internal/site/pages/dataapi). Empty means "all". Platform and
+    # language are lower-cased before the check.
+    Platform:
+      name: platform
+      in: query
+      example: dramabox
+      description: "An app's slug, as /api/v1/stats/platforms lists them. Otherwise a 400 (`platform: a platform slug, as /api/v1/stats/platforms lists`)."
+      schema:
+        type: string
+        pattern: "^[a-z0-9_-]{1,40}$"
+        examples: [dramabox]
+    Language:
+      name: language
+      in: query
+      example: eng
+      description: "A language code such as `eng`, `spa`, `ind`. Otherwise a 400 (`language: a language code such as eng, spa, ind`)."
+      schema:
+        type: string
+        pattern: "^[a-z]{2,3}(-[a-z]{2,4})?$"
+        examples: [eng]
+    Genre:
+      name: genre
+      in: query
+      example: Revenge
+      description: "A genre tag exactly as /api/v1/stats/genres lists it (letters, digits, spaces and ' & + . / -). Otherwise a 400 (`genre: a genre tag as /api/v1/stats/genres lists`)."
+      schema:
+        type: string
+        pattern: "^[\\p{L}\\p{N} '&+./-]{1,60}$"
+        examples: [Revenge]
+    Tags:
+      name: tags
+      in: query
+      example: platform
+      description: "`platform` (the apps' own tags, the default) or `all` (adds our tagging). Otherwise a 400 (`tags: platform (the apps' own tags, default) or all`)."
+      schema:
+        $ref: "#/components/schemas/TagSource"
+
+  headers:
+    X-RateLimit-Limit:
+      description: Requests allowed per minute (per token for data endpoints, per address for free ones).
+      schema: { type: integer }
+    X-RateLimit-Remaining:
+      description: Requests left in the current minute.
+      schema: { type: integer }
+    X-RateLimit-Reset:
+      description: When the minute window resets, in Unix seconds.
+      schema: { type: integer }
+    X-RateLimit-Daily-Limit:
+      description: Requests allowed per UTC day per token (10,000), across every server.
+      schema: { type: integer }
+    X-RateLimit-Daily-Remaining:
+      description: Requests left today (UTC).
+      schema: { type: integer }
+    Retry-After:
+      description: Seconds to wait before trying again.
+      schema: { type: integer }
+    Cache-Control-Public:
+      description: "`public, max-age=300`: cached 5 minutes."
+      schema: { type: string }
+    Cache-Control-Private:
+      description: "`private, no-store`: a token's answers are never kept by a shared cache."
+      schema: { type: string }
+
+  responses:
+    BadRequest:
+      description: A parameter refused; `error` names it and what it accepts. Carries the token's rate headers.
+      headers: *dataHeaders
+      content:
+        application/json:
+          example: { "error": "platform: a platform slug, as /api/v1/stats/platforms lists" }
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: "No published drama with this id (`not found`), or no such chart week (`no such week`). Carries the token's rate headers."
+      headers: *dataHeaders
+      content:
+        application/json:
+          example: { "error": "not found" }
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: |
+        No token, a malformed one (`an API token is required: create one in
+        Settings > API tokens and send it as Authorization: Bearer
+        <token>`), an unknown or revoked one (`unknown or revoked API
+        token`), or one its owner disabled in Settings (`this API token is
+        disabled; enable it in Settings > API tokens`). Never charged
+        against a limit.
+      headers:
+        WWW-Authenticate:
+          description: '`Bearer realm="microdramalist"` (no token) or `Bearer error="invalid_token"`.'
+          schema: { type: string }
+        Cache-Control:
+          description: "`no-store`."
+          schema: { type: string }
+      content:
+        application/json:
+          example:
+            {
+              "error": "an API token is required: create one in Settings > API tokens and send it as Authorization: Bearer <token>",
+            }
+          schema: { $ref: "#/components/schemas/Error" }
+    TokenRateLimited:
+      description: |
+        Over 60 requests this minute (`rate limit exceeded (per minute)`,
+        with the minute headers) or 10,000 today (`rate limit exceeded (per
+        day)`, with the daily headers; Retry-After counts to UTC midnight).
+      headers:
+        Retry-After: { $ref: "#/components/headers/Retry-After" }
+        X-RateLimit-Limit: { $ref: "#/components/headers/X-RateLimit-Limit" }
+        X-RateLimit-Remaining: { $ref: "#/components/headers/X-RateLimit-Remaining" }
+        X-RateLimit-Reset: { $ref: "#/components/headers/X-RateLimit-Reset" }
+        X-RateLimit-Daily-Limit: { $ref: "#/components/headers/X-RateLimit-Daily-Limit" }
+        X-RateLimit-Daily-Remaining: { $ref: "#/components/headers/X-RateLimit-Daily-Remaining" }
+        Cache-Control:
+          description: "`no-store`."
+          schema: { type: string }
+      content:
+        application/json:
+          example: { "error": "rate limit exceeded (per minute)" }
+          schema: { $ref: "#/components/schemas/Error" }
+    FreeRateLimited:
+      description: 'Over 30 requests this minute from this address (`{"error": "rate limit exceeded"}`).'
+      headers:
+        Retry-After: { $ref: "#/components/headers/Retry-After" }
+        X-RateLimit-Limit: { $ref: "#/components/headers/X-RateLimit-Limit" }
+        X-RateLimit-Remaining: { $ref: "#/components/headers/X-RateLimit-Remaining" }
+        X-RateLimit-Reset: { $ref: "#/components/headers/X-RateLimit-Reset" }
+      content:
+        application/json:
+          example: { "error": "rate limit exceeded" }
+          schema: { $ref: "#/components/schemas/Error" }
+    SubmissionsRateLimited:
+      description: 'Too many requests this hour from this address (`{"error": "Too many submissions. Try again later."}`).'
+      headers:
+        Retry-After: { $ref: "#/components/headers/Retry-After" }
+      content:
+        application/json:
+          example: { "error": "Too many submissions. Try again later." }
+          schema: { $ref: "#/components/schemas/Error" }
+    ServerError:
+      description: Our fault; try again later.
+      content:
+        application/json:
+          example: { "error": "internal error" }
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string, description: "What went wrong, in English." }
+
+    # The CC BY 4.0 block every data response ends with (lib/apiAuth.ts
+    # API_LICENSE; Go: dataapi.license).
+    License:
+      type: object
+      required: [license, licenseUrl, attribution]
+      properties:
+        license: { type: string, const: CC BY 4.0 }
+        licenseUrl: { type: string, const: "https://creativecommons.org/licenses/by/4.0/" }
+        attribution:
+          type: string
+          const: Data from MicroDramaList (https://microdramalist.com)
+          description: The credit line to show beside anything made from the data.
+
+    TagSource:
+      type: string
+      enum: [platform, all]
+      default: platform
+
+    IsoWeek:
+      type: string
+      pattern: "^\\d{4}-W\\d{2}$"
+      examples: [2026-W40]
+
+    ChartMove:
+      type: string
+      enum: [up, down, same, new, reentry]
+      description: Against the week before; `reentry` is back after a gap (or last week has no chart).
+
+    Drama:
+      type: object
+      required:
+        [
+          id,
+          title,
+          alternativeTitles,
+          genres,
+          episodeCount,
+          releaseYear,
+          languages,
+          upvotes,
+          downvotes,
+          description,
+          posterUrl,
+          availableOn,
+        ]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        alternativeTitles: { type: array, items: { type: string } }
+        genres: { type: array, items: { type: string } }
+        episodeCount: { type: [integer, "null"] }
+        releaseYear: { type: [integer, "null"] }
+        languages: { type: array, items: { type: string }, description: "The live listings' languages." }
+        upvotes: { type: integer }
+        downvotes: { type: integer }
+        description: { type: [string, "null"], description: "Our rewritten description; null until written." }
+        posterUrl: { type: [string, "null"], format: uri, description: "Through our image proxy." }
+        availableOn:
+          type: array
+          items:
+            type: object
+            required: [platform, url, unverified, language, dubbed, additionalAttributes, externalId, lastCheckedAt]
+            properties:
+              platform: { type: string, description: "The app's display name." }
+              url:
+                {
+                  type: string,
+                  description: "The link a reader follows (the app's homepage for an unverified listing).",
+                }
+              unverified: { type: boolean }
+              language: { type: [string, "null"] }
+              dubbed: { type: boolean }
+              additionalAttributes: { type: array, items: { type: string } }
+              externalId: { type: [string, "null"] }
+              lastCheckedAt: { type: string, format: date-time }
+
+    SearchResult:
+      type: object
+      required: [id, title, posterUrl, description]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        posterUrl: { type: [string, "null"] }
+        description: { type: [string, "null"] }
+
+    ShowRequestReply:
+      type: object
+      required: [matched]
+      properties:
+        matched: { type: boolean, description: "The URL is on an app we cover." }
+        alreadyAdded: { type: boolean, description: "Present when matched: the show is already in the catalogue." }
+        dramaSlug: { type: string, description: "Present when already added and published: /drama/{dramaSlug}." }
+
+    PlatformStat:
+      type: object
+      required: [platform, name, enabled, titles, stories, englishShare, episodeMedian]
+      properties:
+        platform: { type: string, description: "The slug the other endpoints take." }
+        name: { type: string }
+        enabled: { type: boolean, description: "Still crawled." }
+        titles: { type: integer }
+        stories: { type: integer }
+        englishShare: { type: number, format: double, description: "Percent of titles in English, one decimal." }
+        episodeMedian: { type: [number, "null"], format: double }
+
+    GenreStat:
+      type: object
+      required: [genre, stories, titles, share]
+      properties:
+        genre: { type: string }
+        stories: { type: integer }
+        titles: { type: integer }
+        share: { type: number, format: double, description: "Percent of the scope's stories, one decimal." }
+
+    # One drama in a list (lib/dataApi.ts ApiDrama).
+    ListedDrama:
+      type: object
+      required: [id, slug, url, title, language, genres, episodeCount, releaseYear, platforms, firstSeen]
+      properties:
+        id: { type: string }
+        slug: { type: string }
+        url: { type: string, format: uri }
+        title: { type: string }
+        language: { type: [string, "null"] }
+        genres: { type: array, items: { type: string } }
+        episodeCount: { type: [integer, "null"] }
+        releaseYear: { type: [integer, "null"] }
+        platforms:
+          {
+            type: array,
+            items: { type: string },
+            description: "Slugs of the apps with a live listing; filtered by `platform`, that one only (and firstSeen is that listing's).",
+          }
+        firstSeen: { type: string, format: date-time }
+
+    DramaPage:
+      type: object
+      required: [page, perPage, dramas, nextPage]
+      properties:
+        page: { type: integer }
+        perPage: { type: integer, const: 50 }
+        dramas: { type: array, maxItems: 50, items: { $ref: "#/components/schemas/ListedDrama" } }
+        nextPage: { type: [integer, "null"], description: "Null on a short (last) page." }
+
+    ChangeEvent:
+      type: object
+      required: [type, id, url, platform, at]
+      properties:
+        type: { type: string, enum: [created, updated, pulled] }
+        id: { type: string }
+        url: { type: string, format: uri }
+        platform: { type: [string, "null"], description: "The app a listing was pulled from (pulled only)." }
+        at: { type: string, format: date-time }
+
+    WatchListing:
+      type: object
+      required: [platform, platformName, link, language, dubbed, episodeCount, version, lastChecked]
+      properties:
+        platform: { type: string }
+        platformName: { type: string }
+        link:
+          {
+            type: string,
+            description: "Our affiliate link where we have one; the app's homepage for an unverified listing.",
+          }
+        language: { type: [string, "null"] }
+        dubbed: { type: boolean }
+        episodeCount: { type: [integer, "null"] }
+        version:
+          type: object
+          required: [id, url, title]
+          properties:
+            id: { type: string }
+            url: { type: string, format: uri }
+            title: { type: string }
+        lastChecked: { type: string, format: date-time }
+
+    MatchVersion:
+      type: object
+      required: [id, url, title, language, kind, label, listings]
+      properties:
+        id: { type: string }
+        url: { type: string, format: uri }
+        title: { type: string }
+        language: { type: [string, "null"] }
+        kind: { type: string, description: "`original`, or the version's kind (dub, language, ...)." }
+        label: { type: [string, "null"] }
+        listings:
+          type: array
+          items:
+            type: object
+            required: [platform, platformShowId, platformUrl, unverified]
+            properties:
+              platform: { type: string }
+              platformShowId: { type: [string, "null"] }
+              platformUrl: { type: string }
+              unverified: { type: boolean }
+
+    ChartEntry:
+      type: object
+      required: [rank, move, lastWeek, peak, weeksOnChart, id, title, url]
+      properties:
+        rank: { type: integer, minimum: 1 }
+        move: { $ref: "#/components/schemas/ChartMove" }
+        lastWeek: { type: [integer, "null"] }
+        peak: { type: integer, minimum: 1 }
+        weeksOnChart: { type: integer, minimum: 1 }
+        id: { type: string }
+        title: { type: string }
+        url: { type: string, format: uri }

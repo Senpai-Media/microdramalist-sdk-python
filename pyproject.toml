@@ -1,0 +1,66 @@
+[project]
+name = "microdramalist"
+dynamic = ["version"]
+description = "Python SDK for the MicroDramaList API: micro drama lookups, search, catalogue stats by genre and platform, and the weekly Top 20."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Senpai Media" }]
+requires-python = ">=3.10"
+dependencies = [
+  "httpx>=0.27,<1",
+  "typing-extensions>=4.7",
+]
+keywords = ["microdramalist", "micro drama", "short drama", "reelshort", "dramabox", "api", "sdk"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Typing :: Typed",
+  "Framework :: AsyncIO",
+]
+
+[project.urls]
+Homepage = "https://github.com/Senpai-Media/microdramalist-sdk-python"
+Documentation = "https://microdramalist.com/api-docs"
+Issues = "https://github.com/Senpai-Media/microdramalist-sdk-python/issues"
+
+[dependency-groups]
+dev = [
+  "pytest==9.1.1",
+  "pytest-asyncio==1.4.0",
+  "pyyaml==6.0.3",
+  "ruff==0.17.0",
+  "mypy==2.4.0",
+]
+
+[build-system]
+requires = ["hatchling==1.32.4"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/microdramalist/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/microdramalist"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+# UP006/UP035/UP045: typing.List/Optional are kept so the TypedDicts read the
+# same on every supported Python.
+ignore = ["UP006", "UP035", "UP045"]
+
+[tool.mypy]
+strict = true
+files = ["src"]
+# The clients return the API's parsed JSON (Any) as the TypedDict that
+# describes it; that is the point of the types, not a hole in them.
+warn_return_any = false

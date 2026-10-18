@@ -197,6 +197,9 @@ method of both clients against it. Refresh it with
 `curl -fsSL https://microdramalist.com/openapi.yaml -o spec/openapi.yaml`
 and run the tests.
 
+Changing the SDK itself: `ROUTING.md` names what to open for each kind of
+change, and `CONTEXT.md` maps the repository.
+
 ## License
 
 The SDK is [MIT](LICENSE). The data it fetches is CC BY 4.0 (above).

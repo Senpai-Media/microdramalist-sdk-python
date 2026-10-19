@@ -173,8 +173,9 @@ HEADERS: Dict[str, str] = {
     "X-RateLimit-Limit": "60",
     "X-RateLimit-Remaining": "59",
     "X-RateLimit-Reset": "1791000000",
-    "X-RateLimit-Daily-Limit": "10000",
-    "X-RateLimit-Daily-Remaining": "9999",
+    "X-RateLimit-Hourly-Limit": "300",
+    "X-RateLimit-Hourly-Remaining": "299",
+    "X-RateLimit-Hourly-Reset": "1791003000",
 }
 
 
@@ -187,8 +188,11 @@ def test_exposes_last_rate_limit() -> None:
         "limit": 60,
         "remaining": 59,
         "reset": 1791000000,
-        "dailyLimit": 10000,
-        "dailyRemaining": 9999,
+        "hourlyLimit": 300,
+        "hourlyRemaining": 299,
+        "hourlyReset": 1791003000,
+        "dailyLimit": None,
+        "dailyRemaining": None,
     }
 
 
@@ -202,18 +206,18 @@ def test_retries_429_after_retry_after(no_sleep: List[float]) -> None:
     assert len(fake.calls) == 2
 
 
-def test_raises_at_once_on_daily_limit(no_sleep: List[float]) -> None:
+def test_raises_at_once_on_hourly_limit(no_sleep: List[float]) -> None:
     fake = FakeAPI(
         Answer(
             status=429,
-            body={"error": "rate limit exceeded (per day)"},
-            headers={"Retry-After": "40000", "X-RateLimit-Daily-Remaining": "0"},
+            body={"error": "rate limit exceeded (per hour)"},
+            headers={"Retry-After": "3000", "X-RateLimit-Hourly-Remaining": "0"},
         )
     )
     with pytest.raises(RateLimitError) as info:
         sync(fake, token="t").list_chart_weeks()
-    assert info.value.retry_after == 40000
-    assert info.value.rate_limit is not None and info.value.rate_limit["dailyRemaining"] == 0
+    assert info.value.retry_after == 3000
+    assert info.value.rate_limit is not None and info.value.rate_limit["hourlyRemaining"] == 0
     assert no_sleep == [] and len(fake.calls) == 1
 
 

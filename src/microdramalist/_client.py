@@ -83,6 +83,9 @@ def _rate_limit(headers: httpx.Headers) -> Optional[RateLimit]:
         "limit": _int_header(headers, "X-RateLimit-Limit"),
         "remaining": _int_header(headers, "X-RateLimit-Remaining"),
         "reset": _int_header(headers, "X-RateLimit-Reset"),
+        "hourlyLimit": _int_header(headers, "X-RateLimit-Hourly-Limit"),
+        "hourlyRemaining": _int_header(headers, "X-RateLimit-Hourly-Remaining"),
+        "hourlyReset": _int_header(headers, "X-RateLimit-Hourly-Reset"),
         "dailyLimit": _int_header(headers, "X-RateLimit-Daily-Limit"),
         "dailyRemaining": _int_header(headers, "X-RateLimit-Daily-Remaining"),
     }
@@ -214,7 +217,7 @@ class MicroDramaList(_Base):
         max_retries: how many times a 429 is retried after waiting its
             Retry-After (0 turns retries off).
         max_retry_wait: the longest Retry-After, in seconds, worth waiting
-            for; a longer one (the daily limit waits until UTC midnight)
+            for; a longer one (the hourly limit waits for the window's end, up to an hour)
             raises RateLimitError at once.
         http_client: an httpx.Client of your own (proxies, transports);
             it should follow redirects, as the default one does.

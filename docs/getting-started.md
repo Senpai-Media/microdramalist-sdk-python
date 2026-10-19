@@ -95,7 +95,8 @@ revoked API token`, the value is wrong or the token was revoked.
 | | Free endpoints | Data endpoints (token) |
 | --- | --- | --- |
 | Per minute | 30 per IP address | 60 per token |
-| Per day | none | 10,000 per token (UTC day) |
+| Per hour | 150 per IP address | 300 per token |
+| Per day | 1,000 per IP address (UTC day; then a `429` until 00:00 UTC that names the free token) | none |
 | Show requests | 20 an hour per address | |
 
 Over a limit the API answers `429` with `Retry-After`. The SDK waits and

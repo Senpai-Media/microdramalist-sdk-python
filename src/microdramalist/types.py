@@ -333,5 +333,11 @@ class RateLimit(TypedDict):
     remaining: Optional[int]
     reset: Optional[int]
     """When the minute window resets, in Unix seconds."""
+    hourlyLimit: Optional[int]
+    """Requests allowed per hour (300 per token, 150 per address on the free endpoints)."""
+    hourlyRemaining: Optional[int]
+    hourlyReset: Optional[int]
+    """When the hour window resets, in Unix seconds."""
     dailyLimit: Optional[int]
+    """Only on the free endpoints' daily refusal (1,000 per address); a token has no daily limit."""
     dailyRemaining: Optional[int]

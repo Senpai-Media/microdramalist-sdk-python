@@ -45,7 +45,7 @@ class RateLimitError(MicroDramaListError):
     """429: over the per-minute or per-day limit.
 
     ``retry_after`` is the seconds the server asked to wait (until UTC
-    midnight for the daily limit).
+    the window's end for the hourly limit, up to an hour).
     """
 
     def __init__(self, message: str, retry_after: Optional[int], rate_limit: Optional[RateLimit]) -> None:

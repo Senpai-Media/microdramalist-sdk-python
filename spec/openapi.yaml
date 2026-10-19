@@ -1,5 +1,5 @@
 # The MicroDramaList API, every /api/v1 endpoint (2026-10-11,
-# docs/api-data-plan.md phase 7; the owner: "we should probably use
+# docs/api/api-data-plan.md phase 7; the owner: "we should probably use
 # oapi-codegen for our API documentation").
 #
 # This file is the ONE definition of the API:
@@ -46,10 +46,11 @@ info:
       `/api/v1/show-requests`, `/api/v1/platform-requests` and the RSS feed
       `/feeds/new.xml`. No token; limited per address.
     - **Data** (Catalogue stats, Dramas, Charts): everything else. Needs a personal token from
-      Settings > API tokens on microdramalist.com, sent as
-      `Authorization: Bearer mdl_...`. 60 requests a minute and 10,000 a
-      day per token (`X-RateLimit-*` and `X-RateLimit-Daily-*` headers);
-      over a limit the answer is 429 with `Retry-After`.
+      Settings > API token on microdramalist.com, sent as
+      `Authorization: Bearer mdl_...`. 60 requests a minute and 300 an
+      hour per token (`X-RateLimit-*` and `X-RateLimit-Hourly-*` headers;
+      no daily limit since 2026-10-18); over a limit the answer is 429
+      with `Retry-After`.
 
     Words the data endpoints share: a **title** is one drama page (one
     language or dub version); a **story** is the show behind its versions.
@@ -61,7 +62,118 @@ info:
     The data is licensed CC BY 4.0: use it for anything, including
     commercially, and credit MicroDramaList with a link. Every data
     response repeats the license in its body.
+
+    ## Terms of use
+
+    The API is for apps, tools and research that use the data and credit
+    MicroDramaList; it is not a way to copy the catalogue. Walking every
+    drama, or every page of every list, to build a copy of MicroDramaList,
+    whatever the business model behind it, is a breach of these terms and
+    ends in an immediate, permanent ban of the token, the account and the
+    address, without warning. The rate limits are not a quota to fill: a
+    normal integration never nears them. If what you are building needs
+    more than they allow, ask first through
+    [the contact page](https://microdramalist.com/contact).
+
+    ## Getting a token
+
+    Sign in, open [Settings > API token](https://microdramalist.com/settings#api-tokens),
+    create your token and copy it: it is shown once, and there is one
+    token per account. Send it on every data call as
+    `Authorization: Bearer mdl_...`. The search and single-drama
+    endpoints need none.
+
+    ## SDKs
+
+    Official clients for [TypeScript and JavaScript](https://github.com/Senpai-Media/microdramalist-sdk-typescript)
+    (Node 18+, Bun, Deno, no dependencies) and
+    [Python](https://github.com/Senpai-Media/microdramalist-sdk-python)
+    (3.10+, sync and async): one method per endpoint, typed errors,
+    rate-limit handling and paging. Both read your token from
+    `MICRODRAMALIST_TOKEN`. Install them from GitHub (they are not on npm
+    or PyPI yet):
+
+    ```sh
+    npm install github:Senpai-Media/microdramalist-sdk-typescript
+    pip install git+https://github.com/Senpai-Media/microdramalist-sdk-python
+    ```
+
+    TypeScript:
+
+    ```ts
+    import { MicroDramaList } from "microdramalist";
+
+    const mdl = new MicroDramaList(); // token from MICRODRAMALIST_TOKEN
+    const { platforms } = await mdl.getStatsPlatforms();
+    ```
+
+    Python:
+
+    ```python
+    from microdramalist import MicroDramaList
+
+    with MicroDramaList() as mdl:  # token from MICRODRAMALIST_TOKEN
+        platforms = mdl.get_stats_platforms()["platforms"]
+    ```
+
+    ## Recipes
+
+    The top genres on DramaBox, from the app's own tags (curl and jq):
+
+    ```sh
+    export MDL_TOKEN=mdl_...   # from Settings > API token
+    curl -s -H "Authorization: Bearer $MDL_TOKEN" \
+      "https://microdramalist.com/api/v1/stats/genres?platform=dramabox" \
+      | jq -r '.genres[:5][] | "\(.genre)\t\(.stories)\t\(.share)%"'
+
+    Revenge             876   24.6%
+    Strong Female Lead  605   17%
+    Romance             501   14.1%
+    Counterattack       418   11.7%
+    Family Bonds        302   8.5%
+    ```
+
+    Werewolf's share of each big app, in Python with only the standard
+    library:
+
+    ```python
+    import json, os, urllib.request
+
+    TOKEN = os.environ["MDL_TOKEN"]
+    BASE = "https://microdramalist.com"
+
+    def get(path):
+        req = urllib.request.Request(BASE + path, headers={"Authorization": f"Bearer {TOKEN}"})
+        with urllib.request.urlopen(req) as r:
+            return json.load(r)
+
+    for p in get("/api/v1/stats/platforms")["platforms"][:6]:
+        genres = get(f"/api/v1/stats/genres?platform={p['platform']}")["genres"]
+        wolf = next((g for g in genres if g["genre"].lower() == "werewolf"), None)
+        print(f"{p['name']:<12} {wolf['share'] if wolf else 0:>5}%  of {p['stories']:,} stories")
+
+    ReelShort      0.2%  of 7,828 stories
+    StardustTV       0%  of 6,282 stories
+    MoboReels      2.8%  of 3,907 stories
+    Kalos TV       1.2%  of 4,571 stories
+    ShortTV        0.9%  of 3,911 stories
+    NetShort       0.9%  of 2,462 stories
+    ```
+
+    Outputs from our catalogue on October 10, 2026. Platform tags only:
+    an app that never tags a show "Werewolf" reads 0% even when it
+    carries werewolf stories.
+
+    Something missing you would find useful? Write to
+    [support@microdramalist.com](mailto:support@microdramalist.com).
   # The license of the data the API serves (the owner's choice, 2026-10-11).
+  # The description's "##" sections (Getting a token, SDKs, Recipes) are
+  # the /api-docs guide since 2026-10-12: Scalar lists each as a sidebar
+  # entry under Introduction, which is why they are here and not in the
+  # page (apps/site/src/app/[locale]/(docs)/api-docs/page.tsx, the Go
+  # static.ApiDocsBody). The SDK and recipe code is what the retired
+  # components/DataApiDocs.tsx and static/dataapi.go carried, run against
+  # the local stack before it was written down; outputs as they came back.
   license:
     name: CC BY 4.0
     url: https://creativecommons.org/licenses/by/4.0/
@@ -75,9 +187,12 @@ info:
 servers:
   - url: https://microdramalist.com
 
+# Since 2026-10-12 /api-docs renders this document (the guide is the
+# description above), so the external link is the announcement article:
+# what the API serves, a first call, the SDKs and the data packs.
 externalDocs:
-  description: The guide, with worked examples in curl, jq and Python
-  url: https://microdramalist.com/api-docs
+  description: The announcement article, with a first call and the data packs
+  url: https://microdramalist.com/articles/microdramalist-api-is-available
 
 # The tags group the reference (2026-10-11, the owner's list for the
 # Scalar reference on /api-docs): Free and Feeds need no token; Catalogue
@@ -85,9 +200,9 @@ externalDocs:
 # Go for the three token tags only.
 tags:
   - name: Free
-    description: Free and anonymous, limited per address (30 a minute for reads). Live before the data API and unchanged.
+    description: "Free and anonymous, limited per address: 30 a minute for reads, 150 an hour and 1,000 a day (since 2026-10-18; past the day, a 429 until 00:00 UTC asks for a free token, which gets 300 an hour). Live before the data API."
   - name: Catalogue stats
-    description: "Token. Counts by platform, genre and language, and the catalogue over time. 60 a minute and 10,000 a day per token; CC BY 4.0."
+    description: "Token. Counts by platform, genre and language, and the catalogue over time. 60 a minute and 300 an hour per token; CC BY 4.0."
   - name: Dramas
     description: "Token. Filtered lists, what is new, what changed, and one drama across apps."
   - name: Charts
@@ -104,8 +219,9 @@ x-dataHeaders: &dataHeaders
   X-RateLimit-Limit: { $ref: "#/components/headers/X-RateLimit-Limit" }
   X-RateLimit-Remaining: { $ref: "#/components/headers/X-RateLimit-Remaining" }
   X-RateLimit-Reset: { $ref: "#/components/headers/X-RateLimit-Reset" }
-  X-RateLimit-Daily-Limit: { $ref: "#/components/headers/X-RateLimit-Daily-Limit" }
-  X-RateLimit-Daily-Remaining: { $ref: "#/components/headers/X-RateLimit-Daily-Remaining" }
+  X-RateLimit-Hourly-Limit: { $ref: "#/components/headers/X-RateLimit-Hourly-Limit" }
+  X-RateLimit-Hourly-Remaining: { $ref: "#/components/headers/X-RateLimit-Hourly-Remaining" }
+  X-RateLimit-Hourly-Reset: { $ref: "#/components/headers/X-RateLimit-Hourly-Reset" }
   Cache-Control: { $ref: "#/components/headers/Cache-Control-Private" }
 
 paths:
@@ -123,7 +239,8 @@ paths:
         text; null until written), a poster through our image proxy, and
         every live listing. An id a duplicate merge folded into another
         drama answers 301 to the surviving drama. 30 requests a minute per
-        address. Cached 5 minutes.
+        address, 150 an hour and 1,000 a day without a token (then a 429
+        whose `error` says how to get a free token). Cached 5 minutes.
       parameters:
         - $ref: "#/components/parameters/DramaId"
       responses:
@@ -198,7 +315,8 @@ paths:
         a literal substring), in title order. A `q` starting with `mdid-` is
         an exact id lookup instead: zero or one result, and an id merged
         into another drama returns that drama. 30 requests a minute per
-        address. Cached 5 minutes.
+        address, 150 an hour and 1,000 a day without a token (then a 429
+        whose `error` says how to get a free token). Cached 5 minutes.
       parameters:
         - name: q
           in: query
@@ -252,16 +370,27 @@ paths:
     post:
       operationId: requestShow
       tags: ["Free"]
-      # Anonymous: no token (the owner's rule, 2026-10-11).
-      security: []
-      summary: Ask us to add a show by its page URL on an app we cover
+      summary: Ask us to add a show by its page URL on an app we cover (signed in, or your API token)
+      # Signed in since 2026-10-12 (the owner: every report and request
+      # names its account); anonymous from 2026-10-11 until then. The
+      # token accepted since that evening (the owner: a show submitted
+      # through the API needs a token, so a garbage sender is an account
+      # the admin can block).
       description: |
-        Anonymous. 20 requests an hour per address. The answer says whether
-        the URL belongs to an app we cover (`matched`), and whether the show
-        is already in the catalogue (`alreadyAdded`, with its page's slug
-        when it is published). A URL already queued is not queued twice.
-        A URL on an app we do not cover answers `{"matched": false}`: ask
-        for the app with /api/v1/platform-requests instead.
+        Needs an account: the browser's session on microdramalist.com, or
+        your API token (`Authorization: Bearer mdl_...`, Settings > API
+        token) from a script. The request is recorded against that
+        account. 20 requests an hour per address; a token call here is
+        not counted against the token's data limits.
+        The answer says whether the URL belongs to an app we cover
+        (`matched`), and whether the show is already in the catalogue
+        (`alreadyAdded`, with its page's slug when it is published). A URL
+        already queued is not queued twice. A URL on an app we do not
+        cover answers `{"matched": false}`: ask for the app with
+        /api/v1/platform-requests instead.
+      security:
+        - session: []
+        - bearer: []
       requestBody:
         required: true
         content:
@@ -288,6 +417,12 @@ paths:
             application/json:
               example: { "error": "Enter a valid URL." }
               schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: 'Not signed in (`{"error": "Sign in to submit a show."}`).'
+          content:
+            application/json:
+              example: { "error": "Sign in to submit a show." }
+              schema: { $ref: "#/components/schemas/Error" }
         "429": { $ref: "#/components/responses/SubmissionsRateLimited" }
         "500": { $ref: "#/components/responses/ServerError" }
 
@@ -295,12 +430,15 @@ paths:
     post:
       operationId: requestPlatform
       tags: ["Free"]
-      summary: Ask us to cover a new app or site (signed in)
+      summary: Ask us to cover a new app or site (signed in, or your API token)
       description: |
-        Needs a signed-in session on microdramalist.com (the browser's
-        session cookie), not an API token. 10 requests an hour per address.
+        Needs an account: the browser's session on microdramalist.com, or
+        your API token (`Authorization: Bearer mdl_...`) from a script,
+        since 2026-10-12. 10 requests an hour per address; a token call
+        here is not counted against the token's data limits.
       security:
         - session: []
+        - bearer: []
       requestBody:
         required: true
         content:
@@ -354,8 +492,10 @@ paths:
       description: |
         The dramas our crawler first saw in the last 7 days, newest first,
         50 items, as RSS -- the free twin of /api/v1/new. Filters as the
-        data endpoints. Cached 30 minutes by the CDN; 30 requests a minute
-        per address behind it. Errors here are plain text, not JSON.
+        data endpoints. Cached 30 minutes by the CDN; 30 requests a minute,
+        150 an hour and 1,000 a day per address behind it. Errors here are
+        plain text, not JSON, except the hour's and the daily cap's 429s,
+        which are the API's JSON `{"error": ...}`.
       parameters:
         - $ref: "#/components/parameters/Platform"
         - $ref: "#/components/parameters/Genre"
@@ -398,7 +538,7 @@ paths:
               example: "platform: a platform slug, as /api/v1/stats/platforms lists"
               schema: { type: string }
         "429":
-          description: Over 30 a minute from this address (`rate limit exceeded`, text).
+          description: Over 30 a minute from this address (`rate limit exceeded`, text), or over 150 this hour or 1,000 today without a token (JSON, `error` saying so and naming the free token; Retry-After to the window's end or to 00:00 UTC).
           headers:
             Retry-After: { $ref: "#/components/headers/Retry-After" }
           content:
@@ -1259,17 +1399,20 @@ components:
       scheme: bearer
       bearerFormat: "mdl_ + 43 base64url characters"
       description: |
-        A personal token from Settings > API tokens (signed in, email
-        verified; up to five live tokens an account). It is shown once; we
-        keep only its SHA-256. In Settings a token can be regenerated (a new
-        secret, the old one stops working at once), disabled and enabled
-        again, or revoked for good. Unknown, disabled and revoked tokens are
-        401.
+        A personal token from Settings > API token (signed in, email
+        verified; one token an account). It is shown once; we keep only its
+        SHA-256. In Settings the token can be regenerated (a new secret, the
+        old one stops working at once), disabled and enabled again, or
+        deleted for good (and a new one created). Unknown, disabled and
+        deleted tokens are 401.
     session:
       type: apiKey
       in: cookie
       name: session
-      description: The site's own sign-in session (only /api/v1/platform-requests uses it).
+      description: |
+        The site's own sign-in session, what the browser's forms send. The
+        two request endpoints take it or a bearer token; everything else
+        that needs an account takes the token alone.
 
   parameters:
     DramaId:
@@ -1321,7 +1464,7 @@ components:
 
   headers:
     X-RateLimit-Limit:
-      description: Requests allowed per minute (per token for data endpoints, per address for free ones).
+      description: Requests allowed per minute (per token for data endpoints, across every server; per address for free ones).
       schema: { type: integer }
     X-RateLimit-Remaining:
       description: Requests left in the current minute.
@@ -1329,11 +1472,20 @@ components:
     X-RateLimit-Reset:
       description: When the minute window resets, in Unix seconds.
       schema: { type: integer }
+    X-RateLimit-Hourly-Limit:
+      description: Requests allowed per hour (300 per token, 150 per address on the free endpoints; since 2026-10-18), across every server.
+      schema: { type: integer }
+    X-RateLimit-Hourly-Remaining:
+      description: Requests left in the current hour window.
+      schema: { type: integer }
+    X-RateLimit-Hourly-Reset:
+      description: When the hour window resets, in Unix seconds.
+      schema: { type: integer }
     X-RateLimit-Daily-Limit:
-      description: Requests allowed per UTC day per token (10,000), across every server.
+      description: On the free endpoints' daily refusal only (1,000 per address per UTC day; a token has no daily limit since 2026-10-18).
       schema: { type: integer }
     X-RateLimit-Daily-Remaining:
-      description: Requests left today (UTC).
+      description: Requests left today (UTC), 0 on the daily refusal.
       schema: { type: integer }
     Retry-After:
       description: Seconds to wait before trying again.
@@ -1385,15 +1537,17 @@ components:
     TokenRateLimited:
       description: |
         Over 60 requests this minute (`rate limit exceeded (per minute)`,
-        with the minute headers) or 10,000 today (`rate limit exceeded (per
-        day)`, with the daily headers; Retry-After counts to UTC midnight).
+        with the minute headers) or 300 this hour (`rate limit exceeded (per
+        hour)`, with the hourly headers; Retry-After counts to the window's
+        end). No daily limit since 2026-10-18.
       headers:
         Retry-After: { $ref: "#/components/headers/Retry-After" }
         X-RateLimit-Limit: { $ref: "#/components/headers/X-RateLimit-Limit" }
         X-RateLimit-Remaining: { $ref: "#/components/headers/X-RateLimit-Remaining" }
         X-RateLimit-Reset: { $ref: "#/components/headers/X-RateLimit-Reset" }
-        X-RateLimit-Daily-Limit: { $ref: "#/components/headers/X-RateLimit-Daily-Limit" }
-        X-RateLimit-Daily-Remaining: { $ref: "#/components/headers/X-RateLimit-Daily-Remaining" }
+        X-RateLimit-Hourly-Limit: { $ref: "#/components/headers/X-RateLimit-Hourly-Limit" }
+        X-RateLimit-Hourly-Remaining: { $ref: "#/components/headers/X-RateLimit-Hourly-Remaining" }
+        X-RateLimit-Hourly-Reset: { $ref: "#/components/headers/X-RateLimit-Hourly-Reset" }
         Cache-Control:
           description: "`no-store`."
           schema: { type: string }
@@ -1402,8 +1556,13 @@ components:
           example: { "error": "rate limit exceeded (per minute)" }
           schema: { $ref: "#/components/schemas/Error" }
     FreeRateLimited:
-      description: 'Over 30 requests this minute from this address (`{"error": "rate limit exceeded"}`).'
+      description: 'Over 30 requests this minute from this address (`{"error": "rate limit exceeded"}`), 150 this hour (`rate limit exceeded (per hour): ...`, the hourly headers, Retry-After to the window''s end) or 1,000 today (`anonymous daily limit reached: ...` naming the free token, the daily headers, Retry-After to 00:00 UTC). Since 2026-10-18.'
       headers:
+        X-RateLimit-Daily-Limit: { $ref: "#/components/headers/X-RateLimit-Daily-Limit" }
+        X-RateLimit-Daily-Remaining: { $ref: "#/components/headers/X-RateLimit-Daily-Remaining" }
+        X-RateLimit-Hourly-Limit: { $ref: "#/components/headers/X-RateLimit-Hourly-Limit" }
+        X-RateLimit-Hourly-Remaining: { $ref: "#/components/headers/X-RateLimit-Hourly-Remaining" }
+        X-RateLimit-Hourly-Reset: { $ref: "#/components/headers/X-RateLimit-Hourly-Reset" }
         Retry-After: { $ref: "#/components/headers/Retry-After" }
         X-RateLimit-Limit: { $ref: "#/components/headers/X-RateLimit-Limit" }
         X-RateLimit-Remaining: { $ref: "#/components/headers/X-RateLimit-Remaining" }
